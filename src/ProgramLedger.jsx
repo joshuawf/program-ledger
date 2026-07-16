@@ -124,7 +124,7 @@ function Sparkline({ values, color, height = 28, width = 100 }) {
 }
 
 function FlagStamp({ flags }) {
-  if (flags.length === 0) return <span className="text-[11px] font-mono text-stone-400">\u2014</span>;
+  if (flags.length === 0) return <span className="text-[11px] font-mono text-stone-400">{'\u2014'}</span>;
   return (
     <div
       className="inline-flex items-center justify-center rounded-full border-2 font-serif font-bold uppercase tracking-wide"
@@ -711,3 +711,4 @@ export default function ProgramLedger() {
     </div>
   );
 }
+
