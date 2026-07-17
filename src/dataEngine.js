@@ -188,6 +188,12 @@ export function computeFlags(rows, legacyKeys) {
       }
     }
     const cohortSize = degreeCounts[r.degree] || 0;
-    return { ...r, flags, isRetired, cohortSize };
+    const hasEnrFlag = flags.some(f => f.code.startsWith('E'));
+    const hasGradFlag = flags.some(f => f.code.startsWith('G'));
+    // "Flagged" (the badge, the stat card, the "show flagged only" filter) now means
+    // low on BOTH sides — a program that's merely small on one axis isn't interesting
+    // on its own; it's the combination that signals a program worth a closer look.
+    const bothSidesFlagged = hasEnrFlag && hasGradFlag;
+    return { ...r, flags, isRetired, cohortSize, hasEnrFlag, hasGradFlag, bothSidesFlagged };
   });
 }
