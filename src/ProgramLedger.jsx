@@ -775,9 +775,9 @@ export default function ProgramLedger() {
                 <th className="text-left px-3 py-3 font-sans font-medium" style={{ color: '#F1F0EA' }}>Degree</th>
                 <th className="text-left px-3 py-3 font-sans font-medium" style={{ color: '#F1F0EA' }}>Location</th>
                 <th className="text-left px-3 py-3 font-sans font-medium" style={{ color: '#F1F0EA' }}>Enrollment (Winter window)</th>
-                <th onClick={() => toggleSort('enrAvg')} className="text-right px-3 py-3 font-sans font-medium cursor-pointer select-none" style={{ color: '#F1F0EA' }}>Avg {sortKey === 'enrAvg' && (sortDir === 'asc' ? '\u2191' : '\u2193')}</th>
+                <th onClick={() => toggleSort('enrAvg')} className="text-right px-3 py-3 font-sans font-medium cursor-pointer select-none" style={{ color: '#F1F0EA' }}>5-Yr Avg {sortKey === 'enrAvg' && (sortDir === 'asc' ? '\u2191' : '\u2193')}</th>
                 <th className="text-left px-3 py-3 font-sans font-medium" style={{ color: '#F1F0EA' }}>Graduates (5-yr window)</th>
-                <th onClick={() => toggleSort('gradAvg')} className="text-right px-3 py-3 font-sans font-medium cursor-pointer select-none" style={{ color: '#F1F0EA' }}>Avg {sortKey === 'gradAvg' && (sortDir === 'asc' ? '\u2191' : '\u2193')}</th>
+                <th onClick={() => toggleSort('gradAvg')} className="text-right px-3 py-3 font-sans font-medium cursor-pointer select-none" style={{ color: '#F1F0EA' }}>5-Yr Avg {sortKey === 'gradAvg' && (sortDir === 'asc' ? '\u2191' : '\u2193')}</th>
                 <th onClick={() => toggleSort('flagCount')} className="text-center px-4 py-3 font-sans font-medium cursor-pointer select-none" style={{ color: '#F1F0EA' }}>Status {sortKey === 'flagCount' && (sortDir === 'asc' ? '\u2191' : '\u2193')}</th>
               </tr>
             </thead>
