@@ -1,6 +1,12 @@
 # Program Ledger
 
-An interactive dashboard tracking enrollment and graduation health across SCAD's degree programs — built with React + Vite + Tailwind.
+An interactive dashboard tracking enrollment and graduation health across SCAD's degree programs — built with React + Vite + Tailwind, backed by Supabase.
+
+**This version computes everything live.** Enrollment and graduation numbers live in a database (Supabase), not hardcoded in the app. Averages, percentile flags, and founding dates are all calculated fresh every time the data changes — including automatically rolling the "current" 5-year window forward as new years of data are added.
+
+## Requires Supabase (this version doesn't work without it)
+
+Unlike earlier versions of this dashboard, there's no fallback "browser memory only" mode for the actual enrollment/graduation data — it has to come from somewhere, and that somewhere is Supabase. See **Setting up Supabase** below; it's required before this will show anything.
 
 ## Run it locally
 
@@ -9,57 +15,82 @@ npm install
 npm run dev
 ```
 
-Then open the local URL Vite prints (usually `http://localhost:5173`).
+Then open the local URL Vite prints (usually `http://localhost:5173`). You'll need a `.env.local` file with your Supabase credentials first (see below).
 
-## Deploy to GitHub Pages
+## Setting up Supabase
 
-This repo already includes a GitHub Actions workflow (`.github/workflows/deploy.yml`) that builds and deploys automatically on every push to `main`. One-time setup after you push this repo to GitHub:
+1. Create a free account at [supabase.com](https://supabase.com) and a new project.
+2. Go to **SQL Editor → New query**, paste in the entire contents of `supabase-setup-v2.sql` (included in this repo), and click **Run**. This creates all five tables the dashboard needs: `enrollment`, `graduation`, `founding_overrides`, `retirements`, `lineage_links`.
+3. Go to **Settings → API Keys**. Copy the **Project URL**, and the **Publishable key** (starts with `sb_publishable_...` — on older projects, this may be called the **anon** key under a "Legacy" tab instead; either works).
+4. **For local development:** copy `.env.local.example` to `.env.local` and paste your URL/key in.
+5. **For the deployed GitHub Pages site:** repo → **Settings → Secrets and variables → Actions**, add two repository secrets:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
 
-1. Go to your repo on GitHub → **Settings** → **Pages**.
-2. Under "Build and deployment", set **Source** to **GitHub Actions**.
-3. Push a commit to `main` (or click **Run workflow** under the Actions tab).
-4. After the workflow finishes (usually ~1 minute), your site will be live at:
-   `https://<your-username>.github.io/<repo-name>/`
+   Then re-run the deploy workflow (Actions tab → Run workflow), or push any small change to trigger it.
 
-You can watch the build progress under the **Actions** tab of your repo.
+## Loading the seed data
+
+Two CSV files are included: `seed_enrollment.csv` and `seed_graduation.csv`. To load them into your fresh Supabase project:
+
+1. In Supabase, go to **Table Editor** → click the `enrollment` table
+2. Click **Insert** → **Import data from CSV**
+3. Upload `seed_enrollment.csv`, confirm the column mapping looks right, import
+4. Repeat for the `graduation` table with `seed_graduation.csv`
+
+That's your full history loaded — the dashboard will compute everything from there.
+
+## Adding new years of data going forward
+
+Once it's running, there's an **"+ Add new data"** button in the dashboard sidebar. It accepts a CSV in the same tidy format as the seed files:
+
+- **Enrollment CSV columns:** `location, program, degree, period, period_sort, count`
+- **Graduation CSV columns:** `location, program, degree, year, count`
+
+It shows you a preview (row count, total students, which programs are affected) before you confirm — nothing is saved until you click confirm. This is an *additive* upload: it adds new rows, it doesn't overwrite or delete anything, so don't upload the same period twice or counts will double up.
+
+### About `period_sort`
+
+Each enrollment row needs a `period_sort` value so the dashboard can tell chronological order (Fall 2010 comes before Winter 2011, etc.). The formula:
+
+- `academic_year` = the calendar year printed, **except** for Winter/Spring/Summer terms, which belong to the *previous* Fall's academic year (so "Winter 2013" has `academic_year = 2012`, matching "Fall 2012")
+- `period_sort` = `academic_year * 10 + season_number`, where Fall=0, Winter=1, Spring=2, Summer=3
+
+Example: "Fall 2026" → `20260`. "Winter 2027" → `20261`. If you're only ever adding one new Winter quarter a year going forward, the pattern is easy to continue — ask if you want me to just compute it for you each time instead.
+
+## Manual founding-date overrides
+
+The dashboard infers each program's founding date from its earliest enrollment record. If you know the real launch date and it disagrees (or a program's early years are missing from the data), open **"Manage the ledger" → Founding dates** and set it directly — your value always wins over the inferred one.
+
+## Retirements & program lineage
+
+Also in **"Manage the ledger"**:
+- **Retirements** — mark a program as retired/legacy; it stays visible but drops out of every flag and percentile calculation.
+- **Rename / merge** — if Program A became Program B, link them here. Their full enrollment and graduation history combines under B automatically, and B's founding date recalculates from the *combined* history (not just copied from A) — so this is more accurate than a simple "add the two averages together."
 
 ## Project structure
 
 ```
-├── index.html              Vite entry HTML
+├── index.html                Vite entry HTML
 ├── src/
-│   ├── main.jsx             Mounts the React app
-│   ├── ProgramLedger.jsx    The dashboard component (all data + logic)
-│   └── index.css            Tailwind directives
-├── vite.config.js          Uses a relative base path — works at any Pages URL
+│   ├── main.jsx               Mounts the React app
+│   ├── ProgramLedger.jsx      The dashboard component (UI + Supabase wiring)
+│   ├── dataEngine.js          Pure calculation functions — rolling windows,
+│   │                          founding dates, flags. No React, no Supabase;
+│   │                          easy to test in isolation.
+│   ├── supabaseClient.js      Supabase client setup
+│   └── index.css              Tailwind directives
+├── supabase-setup-v2.sql     Full schema (5 tables + RLS policies)
+├── seed_enrollment.csv       Full enrollment history, Fall 2010–Winter 2026
+├── seed_graduation.csv       Full graduation history, 2021–2026
+├── vite.config.js            Uses a relative base path — works at any Pages URL
 ├── tailwind.config.js
 ├── postcss.config.js
 └── .github/workflows/deploy.yml   Build + deploy automation
 ```
 
-## Updating the data
-
-The dataset lives as a single `RAW` array at the top of `src/ProgramLedger.jsx`. It was generated from SCAD's enrollment and graduation workbooks (Winter 2021–2025 enrollment; 2021–2025 graduation), plus an inferred "founding quarter" per program/degree/location based on the first non-zero enrollment quarter on record back to Fall 2010.
-
-## Connecting Supabase (so retirements/lineage persist)
-
-By default, without any setup, retirements and lineage links only live in browser memory and reset on refresh. To make them persistent:
-
-1. Create a free account at [supabase.com](https://supabase.com) and a new project.
-2. In your Supabase project, go to **SQL Editor → New query**, paste in the contents of `supabase-setup.sql` (included in this repo), and click **Run**. This creates the two tables the dashboard needs.
-3. In your Supabase project, go to **Settings → API**. Copy the **Project URL** and the **anon public** key.
-4. **For local development:** copy `.env.local.example` to `.env.local` and paste your URL/key in.
-5. **For the deployed GitHub Pages site:** go to your GitHub repo → **Settings → Secrets and variables → Actions → New repository secret**, and add two secrets:
-   - `VITE_SUPABASE_URL`
-   - `VITE_SUPABASE_ANON_KEY`
-
-   Then re-run the deploy workflow (Actions tab → Deploy to GitHub Pages → Run workflow), or just push any small change to trigger it.
-
-Once connected, the "Manage retirements & lineage" panel will show a green "Connected to Supabase" banner, and anything you retire or link will show up for anyone who opens the dashboard, on any device, from then on.
-
-If these env vars aren't set, the dashboard still works exactly as before — it just falls back to browser-only memory, with an orange warning banner in the management panel.
-
 ## Known limitations
 
-- **No persistence without Supabase.** If you skip the setup above, retirements and program-lineage links you record live only in browser memory — they reset on page refresh.
-- **"Overall" is a precomputed sum**, not a live aggregate of the three campus tabs — so retiring or relinking a program at one campus won't automatically update the Overall rows.
+- **"Overall" is computed by summing raw rows across the three campuses live**, then deriving from that combined history — so it's always accurate, but it does mean a lot of the same computation runs twice (once per campus, once for Overall). Fine at this data size; would need optimizing if the dataset grew dramatically.
+- **The upload feature is purely additive** — there's no "replace" or "delete a period" button yet. If you upload bad data, the cleanest fix right now is deleting the bad rows directly in Supabase's Table Editor (filter by `period` or `year`, select, delete).
+- **No login system** — anyone with the dashboard's link can retire programs, add lineage links, or upload data. Fine for a small internal tool; would need real access control for anything more sensitive.
