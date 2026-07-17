@@ -45,6 +45,23 @@ function applyLineageToRawRows(enrollmentRows, graduationRows, lineage) {
 
 function rowLabel(r) { return `${r.program} — ${r.degree} (${r.location})`; }
 
+// Supabase caps a single query at 1000 rows by default. Our enrollment table
+// has 9000+ rows, so a plain .select() silently truncates — this pages
+// through in batches until everything's been pulled, however large the
+// table grows over time.
+async function fetchAllRows(query, pageSize = 1000) {
+  let all = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await query.range(from, from + pageSize - 1);
+    if (error) return { data: null, error };
+    all = all.concat(data);
+    if (data.length < pageSize) break; // last page was partial — we've got everything
+    from += pageSize;
+  }
+  return { data: all, error: null };
+}
+
 function foundingText(r) {
   if (r.foundedOverridden) {
     return { short: r.founded, full: `Manually set: ${r.founded}${r.foundedNote ? ' — ' + r.foundedNote : ''}` };
@@ -566,8 +583,8 @@ export default function ProgramLedger() {
     (async () => {
       setLoading(true);
       const [enrRes, gradRes, retRes, linkRes, foundRes] = await Promise.all([
-        supabase.from('enrollment').select('location,program,degree,period,period_sort,count'),
-        supabase.from('graduation').select('location,program,degree,year,count'),
+        fetchAllRows(supabase.from('enrollment').select('location,program,degree,period,period_sort,count')),
+        fetchAllRows(supabase.from('graduation').select('location,program,degree,year,count')),
         supabase.from('retirements').select('key'),
         supabase.from('lineage_links').select('*'),
         supabase.from('founding_overrides').select('*'),
