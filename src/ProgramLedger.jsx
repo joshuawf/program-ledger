@@ -87,6 +87,21 @@ function Sparkline({ values, color, height = 28, width = 100 }) {
   );
 }
 
+function TrendArrow({ trend }) {
+  if (!trend) return null;
+  const config = {
+    rising: { glyph: '\u2197', color: '#3F6B52', label: 'Rising over this window' },
+    falling: { glyph: '\u2198', color: '#B8462F', label: 'Falling over this window' },
+    flat: { glyph: '\u2192', color: '#8A8F86', label: 'Roughly flat over this window' },
+  }[trend];
+  if (!config) return null;
+  return (
+    <span className="font-mono text-sm ml-1" style={{ color: config.color }} title={config.label}>
+      {config.glyph}
+    </span>
+  );
+}
+
 function FlagStamp({ flagged, flags }) {
   if (!flagged) return <span className="text-[11px] font-mono text-stone-400">{'\u2014'}</span>;
   return (
@@ -120,7 +135,74 @@ function RetiredBadge() {
   );
 }
 
-function DetailDrawer({ row, onClose, cohortLabel }) {
+// Deliberately a different shape/color from FlagStamp's rust circle — this is a
+// different kind of concern (completion, not scale) and shouldn't be confused
+// with "this program is just small."
+function CompletionBadge() {
+  return (
+    <span className="inline-flex items-center text-[9px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded"
+      style={{ color: '#7C5B8A', border: '1px solid #7C5B8A', background: 'rgba(124,91,138,0.08)' }}
+      title="Enrollment isn't shrinking, but graduation output is — a completion/attrition pattern, not a scale problem. Based on trend comparison, not true cohort tracking (this data has no student IDs to follow an actual cohort through).">
+      &#8595; completion
+    </span>
+  );
+}
+
+// For a program offered at multiple degree levels (same location), shows whether
+// the mix between them has shifted — e.g. BFA holding steady while MFA quietly
+// shrinks toward zero. Uses the same early-half/late-half split as the trend
+// arrows, applied to enrollment (the metric every degree level reliably has).
+function DegreeMixPanel({ row, allRows }) {
+  const siblings = allRows.filter(r => r.location === row.location && r.program === row.program && r.enrWindowVals);
+  if (siblings.length < 2) return null;
+
+  const splitShares = siblings.map(s => {
+    const vals = s.enrWindowVals;
+    const mid = Math.ceil(vals.length / 2);
+    const early = vals.slice(0, mid).reduce((a, b) => a + b, 0);
+    const late = vals.slice(vals.length - mid).reduce((a, b) => a + b, 0);
+    return { degree: s.degree, early, late };
+  });
+  const earlyTotal = splitShares.reduce((sum, s) => sum + s.early, 0);
+  const lateTotal = splitShares.reduce((sum, s) => sum + s.late, 0);
+  if (earlyTotal === 0 && lateTotal === 0) return null;
+
+  return (
+    <div className="border-t pt-5" style={{ borderColor: '#A98F62' }}>
+      <div className="text-[11px] font-mono uppercase tracking-widest mb-2" style={{ color: '#8A8F86' }}>
+        Degree mix at {row.location} — early vs. late in the Winter window
+      </div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr>
+            <th className="text-left font-sans font-medium pb-1" style={{ color: '#6B6455' }}>Degree</th>
+            <th className="text-right font-sans font-medium pb-1" style={{ color: '#6B6455' }}>Early share</th>
+            <th className="text-right font-sans font-medium pb-1" style={{ color: '#6B6455' }}>Late share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {splitShares.map(s => {
+            const earlyPct = earlyTotal > 0 ? (s.early / earlyTotal) * 100 : 0;
+            const latePct = lateTotal > 0 ? (s.late / lateTotal) * 100 : 0;
+            const isCurrentRow = s.degree === row.degree;
+            return (
+              <tr key={s.degree} style={{ background: isCurrentRow ? 'rgba(63,107,82,0.08)' : 'transparent' }}>
+                <td className="py-1 font-mono" style={{ color: '#33312D', fontWeight: isCurrentRow ? 700 : 400 }}>{s.degree}</td>
+                <td className="py-1 text-right font-mono" style={{ color: '#33312D' }}>{earlyPct.toFixed(0)}%</td>
+                <td className="py-1 text-right font-mono" style={{ color: latePct + 10 < earlyPct ? '#B8462F' : '#33312D' }}>{latePct.toFixed(0)}%</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div className="text-[10px] font-sans mt-2" style={{ color: '#8A8F86' }}>
+        Share of this program's total enrollment held by each degree level, comparing the first vs. second half of the current Winter window.
+      </div>
+    </div>
+  );
+}
+
+function DetailDrawer({ row, onClose, cohortLabel, allRows }) {
   if (!row) return null;
   const ft = foundingText(row);
   return (
@@ -228,8 +310,70 @@ function DetailDrawer({ row, onClose, cohortLabel }) {
               </>
             ) : <div className="text-sm font-mono text-stone-400">No graduation data for this location.</div>}
           </div>
+
+          <DegreeMixPanel row={row} allRows={allRows} />
         </div>
       </div>
+    </div>
+  );
+}
+
+// Side-by-side view for programs offered at 2+ campuses — opt-in via a tab
+// toggle rather than always-on, so the main ledger stays uncluttered.
+function CompareLocationsView({ rows, onSelect }) {
+  const LOCS = ['Savannah', 'Atlanta', 'SCADnow'];
+  const grouped = new Map();
+  rows.filter(r => LOCS.includes(r.location)).forEach(r => {
+    const key = `${r.program}|${r.degree}`;
+    if (!grouped.has(key)) grouped.set(key, { program: r.program, degree: r.degree, byLoc: {} });
+    grouped.get(key).byLoc[r.location] = r;
+  });
+  const multiLocation = Array.from(grouped.values())
+    .filter(g => Object.keys(g.byLoc).length >= 2)
+    .sort((a, b) => a.program.localeCompare(b.program));
+
+  if (multiLocation.length === 0) {
+    return <div className="text-sm font-sans px-4 py-10 text-center" style={{ color: '#8A8F86' }}>No programs in the current filters are offered at more than one campus.</div>;
+  }
+
+  return (
+    <div className="rounded-lg overflow-hidden" style={{ border: '1px solid #DDD7C8', background: '#F8F7F2' }}>
+      <table className="w-full text-sm">
+        <thead>
+          <tr style={{ background: '#1B2A41' }}>
+            <th className="text-left px-4 py-3 font-sans font-medium" style={{ color: '#F1F0EA' }}>Program / Degree</th>
+            {LOCS.map(loc => (
+              <th key={loc} className="text-center px-3 py-3 font-sans font-medium" style={{ color: '#F1F0EA' }}>{loc}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {multiLocation.map((g, i) => (
+            <tr key={g.program + g.degree} style={{ borderTop: i === 0 ? 'none' : '1px solid #E5E0D3' }}>
+              <td className="px-4 py-3">
+                <div className="font-serif" style={{ color: '#1B2A41' }}>{g.program}</div>
+                <div className="font-mono text-[10px]" style={{ color: '#8A8F86' }}>{g.degree}</div>
+              </td>
+              {LOCS.map(loc => {
+                const r = g.byLoc[loc];
+                if (!r) return <td key={loc} className="px-3 py-3 text-center font-mono text-xs" style={{ color: '#C9C4B4' }}>not offered</td>;
+                return (
+                  <td key={loc} className="px-3 py-3 text-center cursor-pointer hover:bg-black/[0.03]" onClick={() => onSelect(r)}>
+                    <div className="font-mono text-xs" style={{ color: '#1B2A41' }}>
+                      E: <strong>{r.enrAvgVal !== null ? r.enrAvgVal.toFixed(1) : '\u2014'}</strong>
+                      {' '}&middot;{' '}
+                      G: <strong>{r.gradAvgVal !== null ? r.gradAvgVal.toFixed(1) : '\u2014'}</strong>
+                    </div>
+                    <div className="mt-1">
+                      {r.isRetired ? <RetiredBadge /> : <FlagStamp flagged={r.bothSidesFlagged} flags={r.flags} />}
+                    </div>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -576,6 +720,7 @@ export default function ProgramLedger() {
   const [foundingOverrides, setFoundingOverrides] = useState([]);
   const [manageOpen, setManageOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [mainView, setMainView] = useState('ledger');
   const [rawEnrollment, setRawEnrollment] = useState([]);
   const [rawGraduation, setRawGraduation] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -782,7 +927,15 @@ export default function ProgramLedger() {
         </div>
 
         <div className="flex items-baseline justify-between mb-3">
-          <h2 className="font-serif text-xl" style={{ color: '#1B2A41' }}>Ledger</h2>
+          <div className="flex items-center gap-1">
+            {[{ id: 'ledger', label: 'Ledger' }, { id: 'compare', label: 'Compare Locations' }].map(t => (
+              <button key={t.id} onClick={() => setMainView(t.id)}
+                className="font-serif text-xl px-1 pb-1"
+                style={{ color: mainView === t.id ? '#1B2A41' : '#B0AA9C', borderBottom: mainView === t.id ? '2px solid #1B2A41' : '2px solid transparent' }}>
+                {t.label}
+              </button>
+            ))}
+          </div>
           <div className="flex items-center gap-4">
             <div className="text-xs font-mono" style={{ color: '#8A8F86' }}>cohort: {cohortLabel}</div>
             <button onClick={() => setManageOpen(true)} className="text-xs font-sans px-3 py-1.5 rounded" style={{ background: '#1B2A41', color: '#F1F0EA' }}>
@@ -791,6 +944,9 @@ export default function ProgramLedger() {
           </div>
         </div>
 
+        {mainView === 'compare' ? (
+          <CompareLocationsView rows={rows} onSelect={setSelected} />
+        ) : (
         <div className="rounded-lg overflow-hidden" style={{ border: '1px solid #DDD7C8', background: '#F8F7F2' }}>
           <table className="w-full text-sm">
             <thead>
@@ -821,14 +977,15 @@ export default function ProgramLedger() {
                     </td>
                     <td className="px-3 py-3 font-mono text-xs" style={{ color: '#5A5A54' }}>{r.degree}</td>
                     <td className="px-3 py-3 font-sans text-xs" style={{ color: '#5A5A54' }}>{r.location}</td>
-                    <td className="px-3 py-3"><Sparkline values={r.enrWindowVals} color="#3F6B52" /></td>
+                    <td className="px-3 py-3"><div className="flex items-center">{<Sparkline values={r.enrWindowVals} color="#3F6B52" />}<TrendArrow trend={r.enrTrend} /></div></td>
                     <td className="px-3 py-3 text-right font-mono font-semibold" style={{ color: '#1B2A41' }}>{r.enrAvgVal !== null ? r.enrAvgVal.toFixed(1) : '\u2014'}</td>
-                    <td className="px-3 py-3"><Sparkline values={r.gradDisplayVals?.slice(0, -1)} color="#1B2A41" /></td>
+                    <td className="px-3 py-3"><div className="flex items-center">{<Sparkline values={r.gradDisplayVals?.slice(0, -1)} color="#1B2A41" />}<TrendArrow trend={r.gradTrend} /></div></td>
                     <td className="px-3 py-3 text-right font-mono font-semibold" style={{ color: '#1B2A41' }}>{r.gradAvgVal !== null ? r.gradAvgVal.toFixed(1) : '\u2014'}</td>
                     <td className="px-4 py-3 text-center">
                       <div className="flex flex-col items-center gap-1">
                         {r.isRetired ? <RetiredBadge /> : <FlagStamp flagged={r.bothSidesFlagged} flags={r.flags} />}
                         {r.smallCohort && <SmallCohortBadge cohortSize={r.cohortSize} degree={r.degree} />}
+                        {r.completionConcern && <CompletionBadge />}
                       </div>
                     </td>
                   </tr>
@@ -840,13 +997,16 @@ export default function ProgramLedger() {
             </tbody>
           </table>
         </div>
+        )}
 
         <div className="mt-4 text-[11px] font-sans" style={{ color: '#8A8F86' }}>
-          Click any row for the full trend and flag rationale. All numbers computed live from the enrollment and graduation tables in Supabase.
+          {mainView === 'compare'
+            ? 'Click any campus\'s numbers to open the full detail drawer for that program at that location.'
+            : 'Click any row for the full trend and flag rationale. All numbers computed live from the enrollment and graduation tables in Supabase.'}
         </div>
       </main>
 
-      <DetailDrawer row={selected} onClose={() => setSelected(null)} cohortLabel={cohortLabel} />
+      <DetailDrawer row={selected} onClose={() => setSelected(null)} cohortLabel={cohortLabel} allRows={allDerived} />
       {manageOpen && (
         <ManagePanel raw={allDerived.filter(r => r.location !== 'Overall')} legacyKeys={legacyKeys} setLegacyKeys={setLegacyKeys}
           lineage={lineage} setLineage={setLineage} foundingOverrides={foundingOverrides} setFoundingOverrides={setFoundingOverrides}

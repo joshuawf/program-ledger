@@ -148,14 +148,42 @@ export function computeDerivedRows({ enrollmentRows, graduationRows, foundingOve
     derived.push({
       location: g.location, program: g.program, degree: g.degree,
       enrWindowPeriods: winterWindow, enrWindowVals, enrAvgVal: enrWindowAvg,
+      enrTrend: hasAnyEnrollment ? computeTrend(enrWindowVals) : null,
       gradDisplayYears: displayYears, gradDisplayVals: gradDisplayVals, gradPartialYear: partialYear,
       gradAvgVal: gradWindowAvg,
+      // Trend uses only the complete-years window, same as the average — the
+      // partial final year is excluded so an in-progress year doesn't read as a drop.
+      gradTrend: hasAnyGraduation ? computeTrend(windowYears.map(y => gradByYear[y] || 0)) : null,
       founded, foundedOverridden, foundedNote: override?.note || null,
     });
   }
 
   return derived;
 }
+
+/**
+ * Compare the first half of a window to the second half to get a simple
+ * rising/falling/flat read. Deliberately coarse — this is meant to catch
+ * "this has clearly been sliding for a while," not to be a precise
+ * statistical trend line. A >15% shift between halves counts as a real
+ * direction; anything smaller reads as flat/noise.
+ */
+export function computeTrend(values) {
+  const real = values.filter(v => v !== undefined && v !== null);
+  if (real.length < 2) return null;
+  const mid = Math.ceil(real.length / 2);
+  const firstHalf = real.slice(0, mid);
+  const secondHalf = real.slice(real.length - mid);
+  const firstAvg = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
+  const secondAvg = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
+  if (firstAvg === 0 && secondAvg === 0) return 'flat';
+  if (firstAvg === 0) return 'rising'; // went from nothing to something
+  const change = (secondAvg - firstAvg) / firstAvg;
+  if (change > 0.15) return 'rising';
+  if (change < -0.15) return 'falling';
+  return 'flat';
+}
+
 
 /**
  * Compute flags (≤10, bottom-10%, small-cohort) for a set of derived rows.
@@ -194,6 +222,18 @@ export function computeFlags(rows, legacyKeys) {
     // low on BOTH sides — a program that's merely small on one axis isn't interesting
     // on its own; it's the combination that signals a program worth a closer look.
     const bothSidesFlagged = hasEnrFlag && hasGradFlag;
-    return { ...r, flags, isRetired, cohortSize, hasEnrFlag, hasGradFlag, bothSidesFlagged };
+
+    // Completion concern: enrollment isn't shrinking, but graduation is — a different
+    // kind of problem than "this program is just small." Note the honest limit here:
+    // this is a trend comparison, not true cohort-tracked yield — the data has no
+    // student IDs, so there's no way to follow an actual enrolled cohort through to
+    // its actual graduation. This is the closest approximation available.
+    const completionConcern = !isRetired
+      && r.enrAvgVal !== null && r.enrAvgVal > 0
+      && r.gradAvgVal !== null
+      && r.enrTrend !== 'falling'
+      && r.gradTrend === 'falling';
+
+    return { ...r, flags, isRetired, cohortSize, hasEnrFlag, hasGradFlag, bothSidesFlagged, completionConcern };
   });
 }
