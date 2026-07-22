@@ -65,6 +65,18 @@ export function currentGradWindow(graduationRows) {
 }
 
 /**
+ * Employment years are all treated as complete — unlike graduation, there's no
+ * "still accumulating" concern once a year's survey results are released.
+ * Uses the 5 most recent years present, with no partial-year exclusion.
+ */
+export function currentEmploymentWindow(employmentRows) {
+  const years = Array.from(new Set(employmentRows.map(r => r.year))).sort((a, b) => a - b);
+  if (years.length === 0) return { windowYears: [], partialYear: null, displayYears: [] };
+  const windowYears = years.slice(-5);
+  return { windowYears, partialYear: null, displayYears: windowYears };
+}
+
+/**
  * The earliest period in the whole dataset — used to phrase "Pre-<year>"
  * for any program whose first on-record enrollment coincides with the
  * very start of the data, meaning we genuinely can't see further back.
@@ -84,10 +96,11 @@ export function globalEarliestPeriod(enrollmentRows) {
  * This is the single function the dashboard calls to go from "raw rows in
  * the database" to "everything shown on the ledger."
  */
-export function computeDerivedRows({ enrollmentRows, graduationRows, foundingOverrides }) {
+export function computeDerivedRows({ enrollmentRows, graduationRows, employmentRows = [], foundingOverrides }) {
   const winterWindow = currentWinterWindow(enrollmentRows);
   const winterWindowSet = new Set(winterWindow);
   const { windowYears, partialYear, displayYears } = currentGradWindow(graduationRows);
+  const { windowYears: empWindowYears, partialYear: empPartialYear, displayYears: empDisplayYears } = currentEmploymentWindow(employmentRows);
   const globalEarliest = globalEarliestPeriod(enrollmentRows);
   const globalEarliestSort = globalEarliest ? periodSortKey(globalEarliest) : null;
   const globalEarliestYear = globalEarliest ? globalEarliest.split(/\s+/)[1] : null;
@@ -99,12 +112,13 @@ export function computeDerivedRows({ enrollmentRows, graduationRows, foundingOve
   function getGroup(location, program, degree) {
     const key = rowKeyOf(location, program, degree);
     if (!groups.has(key)) {
-      groups.set(key, { location, program, degree, enrollment: [], graduation: [] });
+      groups.set(key, { location, program, degree, enrollment: [], graduation: [], employment: [] });
     }
     return groups.get(key);
   }
   for (const r of enrollmentRows) getGroup(r.location, r.program, r.degree).enrollment.push(r);
   for (const r of graduationRows) getGroup(r.location, r.program, r.degree).graduation.push(r);
+  for (const r of employmentRows) getGroup(r.location, r.program, r.degree).employment.push(r);
 
   const derived = [];
   for (const g of groups.values()) {
@@ -126,7 +140,30 @@ export function computeDerivedRows({ enrollmentRows, graduationRows, foundingOve
       ? windowYears.reduce((sum, y) => sum + (gradByYear[y] || 0), 0) / windowYears.length
       : null;
 
-    // Founding date: earliest period (any season, full history) with count > 0
+    // Employment: weighted average (sum of creative / sum of total across the window),
+    // NOT an average of yearly percentages — a rate should be weighted by how many
+    // graduates it's based on, so one big confident year isn't diluted by a tiny
+    // low-n year the same as if they carried equal weight. Years with zero total
+    // (no graduates to survey) are skipped entirely rather than counted as 0%.
+    const empByYear = {};
+    for (const r of g.employment) {
+      const e = empByYear[r.year] || { creative: 0, total: 0 };
+      e.creative += r.creative;
+      e.total += r.total;
+      empByYear[r.year] = e;
+    }
+    const hasAnyEmployment = g.employment.length > 0;
+    const empDisplayVals = empDisplayYears.map(y => {
+      const e = empByYear[y];
+      return e && e.total > 0 ? e.creative / e.total : null;
+    });
+    let empWindowCreative = 0, empWindowTotal = 0;
+    for (const y of empWindowYears) {
+      const e = empByYear[y];
+      if (e && e.total > 0) { empWindowCreative += e.creative; empWindowTotal += e.total; }
+    }
+    const empAvgVal = empWindowTotal > 0 ? empWindowCreative / empWindowTotal : null;
+
     let founded = null;
     if (hasAnyEnrollment) {
       let earliestRow = null;
@@ -154,6 +191,12 @@ export function computeDerivedRows({ enrollmentRows, graduationRows, foundingOve
       // Trend uses only the complete-years window, same as the average — the
       // partial final year is excluded so an in-progress year doesn't read as a drop.
       gradTrend: hasAnyGraduation ? computeTrend(windowYears.map(y => gradByYear[y] || 0)) : null,
+      empDisplayYears, empDisplayVals, empPartialYear, empAvgVal,
+      empTrend: hasAnyEmployment ? computeTrend(empWindowYears.map(y => {
+        const e = empByYear[y];
+        return e && e.total > 0 ? e.creative / e.total : null;
+      }).filter(v => v !== null)) : null,
+      empWindowCreative, empWindowTotal, hasAnyEmployment,
       founded, foundedOverridden, foundedNote: override?.note || null,
     });
   }
@@ -198,6 +241,14 @@ export function computeFlags(rows, legacyKeys) {
   const enrP10 = percentile(enrVals, 10);
   const gradP10 = percentile(gradVals, 10);
 
+  // University-wide employment benchmark: weighted the same way as each program's
+  // own average (sum of creative-field placements / sum of total, across every
+  // active program currently in view) — not a plain average of each program's
+  // rate, which would let a tiny program's rate count as much as a huge one's.
+  const cohortCreative = activeRows.reduce((sum, r) => sum + (r.empWindowCreative || 0), 0);
+  const cohortTotal = activeRows.reduce((sum, r) => sum + (r.empWindowTotal || 0), 0);
+  const universityEmpAvg = cohortTotal > 0 ? cohortCreative / cohortTotal : null;
+
   const degreeCounts = {};
   activeRows.forEach(r => { degreeCounts[r.degree] = (degreeCounts[r.degree] || 0) + 1; });
 
@@ -214,14 +265,21 @@ export function computeFlags(rows, legacyKeys) {
         if (r.gradAvgVal <= 10) flags.push({ code: 'G10', label: '≤10 avg graduates/yr' });
         if (r.gradAvgVal <= gradP10) flags.push({ code: 'GP10', label: 'bottom 10% graduation' });
       }
+      if (r.empAvgVal !== null && universityEmpAvg !== null && r.empAvgVal < universityEmpAvg) {
+        flags.push({ code: 'EMP', label: `below university avg (${(r.empAvgVal * 100).toFixed(0)}% vs ${(universityEmpAvg * 100).toFixed(0)}%)` });
+      }
     }
     const cohortSize = degreeCounts[r.degree] || 0;
-    const hasEnrFlag = flags.some(f => f.code.startsWith('E'));
-    const hasGradFlag = flags.some(f => f.code.startsWith('G'));
-    // "Flagged" (the badge, the stat card, the "show flagged only" filter) now means
-    // low on BOTH sides — a program that's merely small on one axis isn't interesting
-    // on its own; it's the combination that signals a program worth a closer look.
-    const bothSidesFlagged = hasEnrFlag && hasGradFlag;
+    // Explicit checks, not prefix-matching — 'EMP' also starts with 'E', so
+    // .startsWith('E') would wrongly count an employment flag as an enrollment one.
+    const hasEnrFlag = flags.some(f => f.code === 'E10' || f.code === 'EP10');
+    const hasGradFlag = flags.some(f => f.code === 'G10' || f.code === 'GP10');
+    const hasEmpFlag = flags.some(f => f.code === 'EMP');
+    // "Flagged" (the badge, the stat card, the "show flagged only" filter) now
+    // requires all three — enrollment, graduation, AND employment all have to be
+    // low for a program to earn the main flagged stamp. Being weak on just one
+    // or two axes is worth knowing about, but isn't the same signal.
+    const bothSidesFlagged = hasEnrFlag && hasGradFlag && hasEmpFlag;
 
     // Completion concern: enrollment isn't shrinking, but graduation is — a different
     // kind of problem than "this program is just small." Note the honest limit here:
@@ -234,6 +292,6 @@ export function computeFlags(rows, legacyKeys) {
       && r.enrTrend !== 'falling'
       && r.gradTrend === 'falling';
 
-    return { ...r, flags, isRetired, cohortSize, hasEnrFlag, hasGradFlag, bothSidesFlagged, completionConcern };
+    return { ...r, flags, isRetired, cohortSize, hasEnrFlag, hasGradFlag, hasEmpFlag, bothSidesFlagged, completionConcern };
   });
 }
