@@ -103,12 +103,14 @@ function TrendArrow({ trend }) {
   );
 }
 
-function FlagStamp({ flagged, flags }) {
-  if (!flagged) return <span className="text-[11px] font-mono text-stone-400">{'\u2014'}</span>;
+function FlagStamp({ severity, flags }) {
+  if (!severity) return <span className="text-[11px] font-mono text-stone-400">{'\u2014'}</span>;
+  const isRed = severity === 'red';
+  const color = isRed ? '#B8462F' : '#B8860B';
   return (
     <div
       className="inline-flex items-center justify-center rounded-full border-2 font-serif font-bold uppercase tracking-wide"
-      style={{ borderColor: '#B8462F', color: '#B8462F', fontSize: '9px', padding: '3px 9px', transform: 'rotate(-4deg)', letterSpacing: '0.06em', background: 'rgba(184,70,47,0.06)' }}
+      style={{ borderColor: color, color: color, fontSize: '9px', padding: '3px 9px', transform: 'rotate(-4deg)', letterSpacing: '0.06em', background: isRed ? 'rgba(184,70,47,0.06)' : 'rgba(184,134,11,0.08)' }}
       title={flags.map(f => f.label).join('; ')}
     >
       flagged &times;{flags.length}
@@ -242,15 +244,14 @@ function DetailDrawer({ row, onClose, cohortLabel, allRows }) {
                     <span key={f.code} className="text-xs font-sans px-2 py-1 rounded" style={{ background: 'rgba(184,70,47,0.1)', color: '#B8462F' }}>{f.label}</span>
                   ))}
                 </div>
-                {!row.bothSidesFlagged && (
-                  <div className="text-xs font-sans p-2 rounded" style={{ background: '#F1EEE3', color: '#6B6455', border: '1px solid #C9C4B4' }}>
-                    {(() => {
-                      const missing = [];
-                      if (!row.hasEnrFlag) missing.push('enrollment');
-                      if (!row.hasGradFlag) missing.push('graduation');
-                      if (!row.hasEmpFlag) missing.push('employment');
-                      return <>Not low enough on {missing.join(' or ')} to count — the ledger only marks a program as "flagged" (the stamp badge) when it's low on <em>all three</em>: enrollment, graduation, and employment. This one's worth knowing about, but doesn't count toward the flagged total.</>;
-                    })()}
+                {row.yellowFlagged && (
+                  <div className="text-xs font-sans p-2 rounded" style={{ background: 'rgba(184,134,11,0.08)', color: '#8A6D1F', border: '1px solid rgba(184,134,11,0.3)' }}>
+                    Yellow flag — one concern out of three (enrollment, graduation, employment). Worth watching, not yet a red flag.
+                  </div>
+                )}
+                {row.redFlagged && (
+                  <div className="text-xs font-sans p-2 rounded" style={{ background: 'rgba(184,70,47,0.08)', color: '#B8462F', border: '1px solid rgba(184,70,47,0.3)' }}>
+                    Red flag — {row.concernCount} of 3 concerns (enrollment, graduation, employment).
                   </div>
                 )}
               </>
@@ -403,7 +404,7 @@ function CompareLocationsView({ rows, onSelect }) {
                       Emp: <strong>{r.empAvgVal !== null ? `${(r.empAvgVal * 100).toFixed(0)}%` : '\u2014'}</strong>
                     </div>
                     <div className="mt-1">
-                      {r.isRetired ? <RetiredBadge /> : <FlagStamp flagged={r.bothSidesFlagged} flags={r.flags} />}
+                      {r.isRetired ? <RetiredBadge /> : <FlagStamp severity={r.redFlagged ? 'red' : r.yellowFlagged ? 'yellow' : null} flags={r.flags} />}
                     </div>
                   </td>
                 );
@@ -842,10 +843,10 @@ export default function ProgramLedger() {
 
   const rows = useMemo(() => {
     let r = flagged;
-    if (onlyFlagged) r = r.filter(x => x.bothSidesFlagged);
+    if (onlyFlagged) r = r.filter(x => x.redFlagged || x.yellowFlagged);
     const dir = sortDir === "asc" ? 1 : -1;
     return [...r].sort((a, b) => {
-      if (sortKey === "flagCount") return (((a.bothSidesFlagged?1:0) - (b.bothSidesFlagged?1:0)) * 1000 + (a.flags.length - b.flags.length)) * dir;
+      if (sortKey === "flagCount") return ((a.concernCount - b.concernCount) * 1000 + (a.flags.length - b.flags.length)) * dir;
       if (sortKey === "program") return a.program.localeCompare(b.program) * dir;
       if (sortKey === "enrAvg") return ((a.enrAvgVal ?? -1) - (b.enrAvgVal ?? -1)) * dir;
       if (sortKey === "gradAvg") return ((a.gradAvgVal ?? -1) - (b.gradAvgVal ?? -1)) * dir;
@@ -856,13 +857,13 @@ export default function ProgramLedger() {
 
   const stats = useMemo(() => {
     const total = flagged.length;
-    const flaggedCount = flagged.filter(r => r.bothSidesFlagged).length;
-    const partialCount = flagged.filter(r => !r.bothSidesFlagged && (r.hasEnrFlag || r.hasGradFlag || r.hasEmpFlag)).length;
+    const redCount = flagged.filter(r => r.redFlagged).length;
+    const yellowCount = flagged.filter(r => r.yellowFlagged).length;
     const active = flagged.filter(r => !r.isRetired);
     const cohortCreative = active.reduce((sum, r) => sum + (r.empWindowCreative || 0), 0);
     const cohortTotal = active.reduce((sum, r) => sum + (r.empWindowTotal || 0), 0);
     const universityEmpAvg = cohortTotal > 0 ? cohortCreative / cohortTotal : null;
-    return { total, flaggedCount, partialCount, universityEmpAvg };
+    return { total, redCount, yellowCount, universityEmpAvg };
   }, [flagged]);
 
   const winterWindowLabel = filteredBase[0]?.enrWindowPeriods?.length
@@ -951,9 +952,9 @@ export default function ProgramLedger() {
 
         <div className="mt-auto pt-5 border-t text-[11px] font-sans leading-relaxed" style={{ borderColor: '#33425C', color: '#7A8699' }}>
           <div className="font-mono uppercase tracking-widest mb-1" style={{ color: '#7C9885' }}>How flags work</div>
-          A program earns a flag reason when its 5-yr average enrollment or graduate count is &le;10, falls in the bottom 10% of whatever's currently in view, or its field-related employment rate is below the university-wide average. But the flagged stamp only shows up when a program is low on <strong>all three</strong> — enrollment, graduation, and employment — being weak on just one or two isn't enough. All three windows roll forward automatically as new data is added.
+          A program earns a concern when its 5-yr average enrollment or graduate count is &le;10, falls in the bottom 10% of whatever's currently in view, or its field-related employment rate is below the university-wide average — three possible axes: enrollment, graduation, employment. <span style={{ color: '#B8462F', fontWeight: 600 }}>Red</span> means 2 or 3 of those are true; <span style={{ color: '#B8860B', fontWeight: 600 }}>yellow</span> means exactly 1. All three windows roll forward automatically as new data is added.
           <br /><br />
-          The purple <span style={{ color: '#7C5B8A', fontWeight: 600 }}>completion</span> badge is a different signal: enrollment holding steady or rising while graduation is falling — worth a look even if it never crosses the flag threshold.
+          The purple <span style={{ color: '#7C5B8A', fontWeight: 600 }}>completion</span> badge is a different signal: enrollment holding steady or rising while graduation is falling — worth a look regardless of red/yellow status.
           <br /><br />
           Degree types with {SMALL_COHORT_THRESHOLD} or fewer programs in view get a <span style={{ fontFamily: 'IBM Plex Mono' }}>small n=</span> badge instead of an equally-confident percentile flag.
           <br /><br />
@@ -971,8 +972,8 @@ export default function ProgramLedger() {
         <div className="grid grid-cols-4 gap-4 mb-8">
           {[
             { label: 'Programs in view', value: stats.total, color: '#1B2A41' },
-            { label: 'Flagged (low on all three)', value: stats.flaggedCount, color: '#B8462F' },
-            { label: 'Partial concern (1-2 of 3)', value: stats.partialCount, color: '#8A8F86' },
+            { label: 'Flagged \u2014 red (2-3 issues)', value: stats.redCount, color: '#B8462F' },
+            { label: 'Flagged \u2014 yellow (1 issue)', value: stats.yellowCount, color: '#B8860B' },
             { label: 'University employment avg', value: stats.universityEmpAvg !== null ? `${(stats.universityEmpAvg * 100).toFixed(0)}%` : '\u2014', color: '#3F6B52' },
           ].map((s, i) => (
             <div key={i} className="p-4 rounded-lg" style={{ background: '#F8F7F2', border: '1px solid #DDD7C8' }}>
@@ -1043,7 +1044,7 @@ export default function ProgramLedger() {
                     <td className="px-3 py-3 text-right font-mono font-semibold" style={{ color: '#1B2A41' }}>{r.empAvgVal !== null ? `${(r.empAvgVal * 100).toFixed(0)}%` : '\u2014'}</td>
                     <td className="px-4 py-3 text-center">
                       <div className="flex flex-col items-center gap-1">
-                        {r.isRetired ? <RetiredBadge /> : <FlagStamp flagged={r.bothSidesFlagged} flags={r.flags} />}
+                        {r.isRetired ? <RetiredBadge /> : <FlagStamp severity={r.redFlagged ? 'red' : r.yellowFlagged ? 'yellow' : null} flags={r.flags} />}
                         {r.smallCohort && <SmallCohortBadge cohortSize={r.cohortSize} degree={r.degree} />}
                         {r.completionConcern && <CompletionBadge />}
                       </div>

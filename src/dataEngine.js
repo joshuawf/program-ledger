@@ -275,11 +275,13 @@ export function computeFlags(rows, legacyKeys) {
     const hasEnrFlag = flags.some(f => f.code === 'E10' || f.code === 'EP10');
     const hasGradFlag = flags.some(f => f.code === 'G10' || f.code === 'GP10');
     const hasEmpFlag = flags.some(f => f.code === 'EMP');
-    // "Flagged" (the badge, the stat card, the "show flagged only" filter) now
-    // requires all three — enrollment, graduation, AND employment all have to be
-    // low for a program to earn the main flagged stamp. Being weak on just one
-    // or two axes is worth knowing about, but isn't the same signal.
-    const bothSidesFlagged = hasEnrFlag && hasGradFlag && hasEmpFlag;
+    // Two-tier severity based on how many of the three axes (enrollment,
+    // graduation, employment) show a concern — not all-or-nothing. One weak
+    // axis is worth a yellow flag; two or more is worth a red one.
+    const concernCount = (hasEnrFlag ? 1 : 0) + (hasGradFlag ? 1 : 0) + (hasEmpFlag ? 1 : 0);
+    const redFlagged = !isRetired && concernCount >= 2;
+    const yellowFlagged = !isRetired && concernCount === 1;
+    const bothSidesFlagged = redFlagged; // kept for any code still checking this name
 
     // Completion concern: enrollment isn't shrinking, but graduation is — a different
     // kind of problem than "this program is just small." Note the honest limit here:
@@ -292,6 +294,6 @@ export function computeFlags(rows, legacyKeys) {
       && r.enrTrend !== 'falling'
       && r.gradTrend === 'falling';
 
-    return { ...r, flags, isRetired, cohortSize, hasEnrFlag, hasGradFlag, hasEmpFlag, bothSidesFlagged, completionConcern };
+    return { ...r, flags, isRetired, cohortSize, hasEnrFlag, hasGradFlag, hasEmpFlag, concernCount, redFlagged, yellowFlagged, bothSidesFlagged, completionConcern };
   });
 }
